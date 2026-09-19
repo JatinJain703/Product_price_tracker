@@ -1,0 +1,42 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model Item {
+  id          Int    @id @default(autoincrement())
+  productId   Int
+  slug        String
+  name        String
+  brand       String
+  category    String
+  sku         String
+  description String
+}
+
+model CronItems {
+  id          Int    @id @default(autoincrement())
+  productId   Int    @unique
+  slug        String
+  name        String
+  brand       String
+  category    String
+  sku         String
+  description String
+}
+
+model History {
+  id          Int      @id @default(autoincrement())
+  productId   Int
+  name        String
+  price       Float?   // nullable in case of scrape error
+  stock       String?  // e.g. "In Stock", "Out of Stock", "12 left"
+  hasError    Boolean  @default(false)
+  errorText   String?  // null when no error
+  scrapedAt   DateTime @default(now()) // auto-set to current date & time on insert
+}
