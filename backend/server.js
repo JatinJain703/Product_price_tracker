@@ -120,39 +120,49 @@ app.get('/scrape/run', async (req, res) => {
             return res.status(200).json({ message: 'No products in CronItems to scrape.', results: [] });
         }
 
-        console.log(`Starting scrape for ${cronItems.length} products...`);
-        const historyRecords = [];
-
-        for (const cronItem of cronItems) {
-            console.log(`Scraping productId: ${cronItem.productId}`);
-            const result = await runScraper(cronItem.productId);
-
-            const hasError = !!result.error;
-
-            const record = await prisma.history.create({
-                data: {
-                    productId: cronItem.productId,
-                    name: cronItem.name,
-                    price: hasError ? null : (result.price ?? null),
-                    stock: hasError ? null : (result.rawStock ?? null),
-                    hasError: hasError,
-                    errorText: hasError ? String(result.error) : null,
-                },
-            });
-
-            historyRecords.push(record);
-            console.log(`  → Saved history id=${record.id} price=${result.price} stock=${result.rawStock}`);
-        }
-
-        return res.status(200).json({
-            message: `Scraped ${cronItems.length} products and saved to History.`,
-            count: historyRecords.length,
-            results: historyRecords,
+        // Return immediately so external cron triggers don't timeout (e.g. cronjobs.org 30s limit)
+        res.status(200).json({
+            message: `Background scrape job started for ${cronItems.length} products.`,
+            count: cronItems.length
         });
+
+        // Continue running the scrape process asynchronously in the background
+        (async () => {
+            console.log(`Starting background scrape for ${cronItems.length} products...`);
+            for (const cronItem of cronItems) {
+                try {
+                    console.log(`Scraping productId: ${cronItem.productId}`);
+                    const result = await runScraper(cronItem.productId);
+
+                    const hasError = !!result.error;
+
+                    const record = await prisma.history.create({
+                        data: {
+                            productId: cronItem.productId,
+                            name: cronItem.name,
+                            price: hasError ? null : (result.price ?? null),
+                            stock: hasError ? null : (result.rawStock ?? null),
+                            hasError: hasError,
+                            errorText: hasError ? String(result.error) : null,
+                        },
+                    });
+
+                    console.log(`  → Saved history id=${record.id} price=${result.price} stock=${result.rawStock}`);
+                } catch (err) {
+                    console.error(`Failed background scrape loop for product ${cronItem.productId}:`, err);
+                }
+            }
+            console.log(`Background scrape job for ${cronItems.length} products completed.`);
+        })();
+
     } catch (error) {
-        console.error('Scrape run error:', error);
+        console.error('Scrape run start error:', error);
+        if (!res.headersSent) {
+            return res.status(500).json({ error: 'Internal server error.' });
+        }
     }
 });
+
 // GET /cronitems
 // Fetches all products currently being tracked in CronItems
 app.get('/cronitems', async (req, res) => {
