@@ -1,13 +1,18 @@
 // scrape.mjs — Node 18+
-// Usage: node scrape.mjs <productId> [--headed] [--debug]
+// Usage:
+//   node scrape.mjs <productId> [--headed] [--debug]   → scrape one product, print result
+//   node scrape.mjs --all [--headed] [--debug]          → scrape all CronItems and save to DB
 
 import { chromium } from "playwright";
+import { PrismaClient } from "@prisma/client";
+import "dotenv/config";
 
 const BASE = "https://demo.inelabteamdev.com";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const HEADED = process.argv.includes("--headed");
 const DEBUG = process.argv.includes("--debug");
+const ALL = process.argv.includes("--all");
 
 async function dismissCookieBanner(page) {
     const overlay = page.locator(".cookie-overlay");
@@ -204,13 +209,7 @@ async function scrapeProduct(context, productId) {
     }
 }
 
-async function main() {
-    const productId = process.argv.find((a) => /^\d+$/.test(a));
-    if (!productId) {
-        console.error("Usage: node scrape.mjs <productId> [--headed] [--debug]");
-        process.exit(1);
-    }
-
+async function launchBrowser() {
     const launchArgs = HEADED
         ? ["--no-sandbox", "--disable-setuid-sandbox", "--disable-blink-features=AutomationControlled"]
         : [
@@ -241,10 +240,70 @@ async function main() {
         Object.defineProperty(navigator, "hardwareConcurrency", { get: () => 8 });
     });
 
+    return { browser, context };
+}
+
+async function runAll() {
+    const prisma = new PrismaClient();
+
+    try {
+        const cronItems = await prisma.cronItems.findMany({
+            select: { productId: true, name: true },
+        });
+
+        if (cronItems.length === 0) {
+            console.log("No products in CronItems to scrape.");
+            return;
+        }
+
+        console.log(`Scraping ${cronItems.length} tracked products…`);
+        const { browser, context } = await launchBrowser();
+
+        for (const cronItem of cronItems) {
+            console.log(`\nScraping productId: ${cronItem.productId}`);
+            const result = await scrapeProduct(context, cronItem.productId);
+            const hasError = !!result.error;
+
+            const record = await prisma.history.create({
+                data: {
+                    productId: cronItem.productId,
+                    name: cronItem.name,
+                    price: hasError ? null : (result.price ?? null),
+                    stock: hasError ? null : (result.rawStock ?? null),
+                    hasError,
+                    errorText: hasError ? String(result.error) : null,
+                },
+            });
+
+            console.log(`  → Saved history id=${record.id}`);
+        }
+
+        await browser.close();
+        console.log("\nAll products scraped and saved to history.");
+    } finally {
+        await prisma.$disconnect();
+    }
+}
+
+async function runOne(productId) {
+    const { browser, context } = await launchBrowser();
     const result = await scrapeProduct(context, productId);
     await browser.close();
-
     process.stdout.write("SCRAPE_RESULT:" + JSON.stringify([result]) + "\n");
+}
+
+async function main() {
+    if (ALL) {
+        await runAll();
+    } else {
+        const productId = process.argv.find((a) => /^\d+$/.test(a));
+        if (!productId) {
+            console.error("Usage: node scrape.mjs <productId> [--headed] [--debug]");
+            console.error("       node scrape.mjs --all [--headed] [--debug]");
+            process.exit(1);
+        }
+        await runOne(productId);
+    }
 }
 
 main().catch((e) => { console.error("FATAL:", e); process.exit(1); });
