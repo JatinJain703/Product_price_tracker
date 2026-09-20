@@ -248,6 +248,27 @@ async function launchBrowser() {
     return { browser, context };
 }
 
+async function scrapeAndSave(prisma, context, cronItem, isRetry = false) {
+    const result = await scrapeProduct(context, cronItem.productId);
+    const hasError = !!result.error;
+
+    const record = await prisma.history.create({
+        data: {
+            productId: cronItem.productId,
+            name: cronItem.name,
+            price: hasError ? null : (result.price ?? null),
+            stock: hasError ? null : (result.rawStock ?? null),
+            hasError,
+            errorText: hasError
+                ? `${isRetry ? "[retry] " : ""}${String(result.error)}`
+                : null,
+        },
+    });
+
+    console.log(`  → Saved history id=${record.id}${isRetry ? " (retry)" : ""}`);
+    return { cronItem, hasError };
+}
+
 async function runAll() {
     const prisma = new PrismaClient();
 
@@ -264,23 +285,22 @@ async function runAll() {
         console.log(`Scraping ${cronItems.length} tracked products…`);
         const { browser, context } = await launchBrowser();
 
+        // --- Pass 1: scrape all products ---
+        const failed = []; // in-memory list of failed items
+
         for (const cronItem of cronItems) {
             console.log(`\nScraping productId: ${cronItem.productId}`);
-            const result = await scrapeProduct(context, cronItem.productId);
-            const hasError = !!result.error;
+            const { hasError } = await scrapeAndSave(prisma, context, cronItem);
+            if (hasError) failed.push(cronItem);
+        }
 
-            const record = await prisma.history.create({
-                data: {
-                    productId: cronItem.productId,
-                    name: cronItem.name,
-                    price: hasError ? null : (result.price ?? null),
-                    stock: hasError ? null : (result.rawStock ?? null),
-                    hasError,
-                    errorText: hasError ? String(result.error) : null,
-                },
-            });
-
-            console.log(`  → Saved history id=${record.id}`);
+        // --- Pass 2: retry failed products once ---
+        if (failed.length > 0) {
+            console.log(`\n⟳ Retrying ${failed.length} failed product(s)…`);
+            for (const cronItem of failed) {
+                console.log(`\nRetrying productId: ${cronItem.productId}`);
+                await scrapeAndSave(prisma, context, cronItem, true);
+            }
         }
 
         await browser.close();
