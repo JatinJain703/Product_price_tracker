@@ -210,20 +210,25 @@ async function scrapeProduct(context, productId) {
 }
 
 async function launchBrowser() {
-    const launchArgs = HEADED
-        ? ["--no-sandbox", "--disable-setuid-sandbox", "--disable-blink-features=AutomationControlled"]
-        : [
-            "--headless=new",
-            "--no-sandbox",
-            "--disable-setuid-sandbox",
-            "--disable-dev-shm-usage",
-            "--disable-blink-features=AutomationControlled",
-            "--use-gl=angle",
-            "--use-angle=swiftshader",
-        ];
+    // Common args for both modes
+    const commonArgs = [
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-blink-features=AutomationControlled",
+    ];
+
+    // Extra args only needed in headless mode
+    const headlessArgs = [
+        "--disable-dev-shm-usage",
+        "--use-gl=angle",
+        "--use-angle=swiftshader",
+    ];
 
     console.log(`Launching browser (${HEADED ? "HEADED" : "headless"})…`);
-    const browser = await chromium.launch({ headless: false, args: launchArgs });
+    const browser = await chromium.launch({
+        headless: !HEADED,
+        args: HEADED ? commonArgs : [...commonArgs, ...headlessArgs],
+    });
 
     const context = await browser.newContext({
         viewport: { width: 1440, height: 900 },
